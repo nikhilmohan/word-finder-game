@@ -22,6 +22,8 @@ import static org.springframework.web.reactive.function.BodyInserters.fromValue;
 @Slf4j
 public class WordHandler {
 
+    private static final int MISSING_LETTER_QUIZ_SIZE = 5;
+    private static final int JUMBLED_QUIZ_SIZE = 5;
     WordRepository wordRepository;
     AttemptLogRepository attemptLogRepository;
     Validator validator;
@@ -128,12 +130,28 @@ public class WordHandler {
                 .reduce((topic1, topic2) ->  topic1 + "&" + topic2  ).get());
 
     }
-
+    private boolean isRequestInvalid(WordQuizAttempt wqa)    {
+        return !(validator.validate(wqa).isEmpty()   ||
+                wqa.getJumbledList().stream()
+                        .anyMatch(aq->!validator.validate(aq).isEmpty()) ||
+                wqa.getMissingLetterList().stream()
+                        .anyMatch(aq->!validator.validate(aq).isEmpty()) ||
+                wqa.getMissingLetterList().size() != JUMBLED_QUIZ_SIZE ||
+                wqa.getMissingLetterList().size() != MISSING_LETTER_QUIZ_SIZE);
+    }
     public Mono<ServerResponse> evaluateWordQuiz(ServerRequest serverRequest) {
         String quizId = serverRequest.pathVariable("id");
         Mono<WordQuizAttempt> wordQuizAttemptMono = serverRequest.bodyToMono(WordQuizAttempt.class);
         return wordQuizAttemptMono.flatMap(wordQuizAttempt -> {
+            if (isRequestInvalid(wordQuizAttempt)) {
+                log.info("Validator found something");
+                wordQuizAttempt.setInvalidateAttempt(true);
+                if (wordQuizAttempt.isInvalidateAttempt()) {
+                    throw new WFGException(422, "invalid quiz submitted!");
+                }
+            }
             return wordRepository.findById(quizId)
+
                 .flatMap(wordQuiz -> {
                     List<String> answers = wordQuiz.getWords().stream()
                             .map(Word::getName).collect(Collectors.toList());
@@ -142,7 +160,8 @@ public class WordHandler {
                     wordQuizAttempt.getMissingLetterList().forEach(missingWordAttempt ->
                             missingWordAttempt.setResult(answers.contains(missingWordAttempt.getWord())));
                     return Mono.just(wordQuizAttempt);
-                }).flatMap(wordQuizAttempt1 -> {
+                }).switchIfEmpty(Mono.error(new WFGException(400, "no data")))
+                    .flatMap(wordQuizAttempt1 -> {
                     AttemptLog attemptLog = new AttemptLog();
                     attemptLog.setId(quizId);
                     attemptLog.setPlayerId(wordQuizAttempt1.getPlayerId());
